@@ -662,25 +662,74 @@
 
     .control-row {
       display:flex;
-      justify-content:space-between;
       align-items:center;
       font-size:12px;
+      gap:10px;
     }
     .control-main {
+      flex:1;
       display:flex;
       align-items:center;
-      gap:6px;
+      justify-content:center;
+      gap:14px;
     }
+    /* 网易云风格播放控制按钮 */
+    .control-main .btn-icon,
     .control-main .play-btn {
-      width:40px;
-      height:40px;
-      font-size:18px;
+      border:none;
+      background:transparent;
+      box-shadow:none;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      border-radius:50%;
+      color:var(--text-main);
+      cursor:pointer;
+      transition:transform .15s ease, background .15s ease, color .15s ease;
     }
+    .control-main .btn-icon {
+      width:34px;
+      height:34px;
+      padding:0;
+      font-size:0;
+    }
+    .control-main .btn-icon svg,
+    .control-main .play-btn svg {
+      width:20px;
+      height:20px;
+      fill:currentColor;
+      pointer-events:none;
+    }
+    .control-main .btn-icon:hover {
+      background:rgba(255,255,255,0.10);
+      transform:scale(1.06);
+    }
+    .control-main .btn-icon:active { transform:scale(.94); }
+    .control-main .play-btn {
+      width:44px;
+      height:44px;
+      background:linear-gradient(145deg,#ff5a4e,#ec4141); /* 网易云红 */
+      color:#fff;
+      box-shadow:0 6px 18px rgba(236,65,65,0.45);
+    }
+    .control-main .play-btn svg { width:22px; height:22px; }
+    .control-main .play-btn:hover {
+      background:linear-gradient(145deg,#ff6b5e,#f0564c);
+      transform:scale(1.05);
+    }
+    .control-main .play-btn:active { transform:scale(.95); }
+    .control-main .play-btn svg.icon-play { display:none; }
+    .control-main .play-btn svg.icon-pause { display:block; }
+    .control-main .play-btn.paused svg.icon-play { display:block; }
+    .control-main .play-btn.paused svg.icon-pause { display:none; }
     .control-secondary {
+      flex:1;
       display:flex;
       align-items:center;
+      justify-content:flex-end;
       gap:4px;
       font-size:11px;
+      color:var(--text-sub);
     }
     .volume-slider {
       width:90px;
@@ -1365,9 +1414,16 @@
               </div>
               <div class="control-row">
                 <div class="control-main">
-                  <button id="prev-btn" class="btn btn-secondary btn-icon ripple-target" title="上一首 (P)">⏮</button>
-                  <button id="play-btn" class="btn play-btn ripple-target" title="播放/暂停 (Space)">▶</button>
-                  <button id="next-btn" class="btn btn-secondary btn-icon ripple-target" title="下一首 (N)">⏭</button>
+                  <button id="prev-btn" class="btn-icon ripple-target" title="上一首 (P)">
+                    <svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zm3.5 7L18 5v14z" transform="scale(-1,1) translate(-24,0)"/><path d="M6 5h2v14H6z" transform="scale(-1,1) translate(-24,0)"/></svg>
+                  </button>
+                  <button id="play-btn" class="play-btn paused ripple-target" title="播放/暂停 (Space)">
+                    <svg class="icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                    <svg class="icon-pause" viewBox="0 0 24 24"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+                  </button>
+                  <button id="next-btn" class="btn-icon ripple-target" title="下一首 (N)">
+                    <svg viewBox="0 0 24 24"><path d="M6 5l8.5 7L6 19zM16 5h2v14h-2z"/></svg>
+                  </button>
                 </div>
                 <div class="control-secondary">
                   <span>🔊</span>
@@ -2696,7 +2752,7 @@
         dom.audio.src=track.audioUrl;
         await dom.audio.play();
         state.isPlaying=true;
-        dom.playBtn.textContent='⏸';
+        dom.playBtn.classList.remove('paused');
         dom.playerStatus.textContent=t('playerStatusPlaying');
       }catch(e){
         console.error(e);
@@ -3289,12 +3345,12 @@
       });
       dom.audio.addEventListener('play',()=>{
         state.isPlaying=true;
-        dom.playBtn.textContent='⏸';
+        dom.playBtn.classList.remove('paused');
         dom.playerStatus.textContent=t('playerStatusPlaying');
       });
       dom.audio.addEventListener('pause',()=>{
         state.isPlaying=false;
-        dom.playBtn.textContent='▶';
+        dom.playBtn.classList.add('paused');
         dom.playerStatus.textContent=t('playerStatusPaused');
         audioLevel = 0;
       });
