@@ -260,6 +260,21 @@
       color: var(--text-sub);
       border: 1px solid rgba(255,255,255,0.12);
     }
+    /* 标题栏右侧可以放多个小标签（例如：歌词效果 + 超时自动切歌） */
+    .chip-row {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-width: 0;
+    }
+    .chip-auto-skip {
+      color: var(--accent-green);
+      border-color: rgba(101,247,196,0.5);
+      background: rgba(13,82,60,0.6);
+      white-space: nowrap;
+    }
 
     .btn {
       border: none;
@@ -1373,7 +1388,10 @@
             <span class="icon">🎧</span>
             <span data-i18n="playerTitle">正在播放</span>
           </div>
-          <span class="chip" data-i18n="playerSubtitle">歌词动态高亮 · 炫酷霓虹</span>
+          <div class="chip-row">
+            <span class="chip" data-i18n="playerSubtitle">歌词动态高亮 · 炫酷霓虹</span>
+            <span id="auto-skip-chip" class="chip chip-auto-skip" data-i18n="playerAutoSkipHint">超时 10 秒自动切歌</span>
+          </div>
         </div>
 
         <div class="player-top">
@@ -1602,6 +1620,8 @@
         playerStatusLoading:"加载音源中…",
         playerStatusPlaying:"播放中",
         playerStatusPaused:"已暂停",
+        playerStatusTimeoutSkip:"加载失败或超时，正在自动切歌…",
+        playerAutoSkipHint:"超时 10 秒自动切歌",
         lyricsEmpty:"暂无歌词，试着播放一首支持歌词的歌曲。",
         playlistTitle:"播放列表",
         tabResults:"搜索结果",
@@ -1624,6 +1644,10 @@
         toastNeedKeyword:"请先输入搜索关键词。",
         toastSearchError:"搜索时发生了一点小错误，请稍后再试。",
         toastPlayError:"播放失败，请稍后再试。",
+        toastAutoSkipTimeout:"这首歌超过 10 秒仍未响应，已自动跳到下一首。",
+        toastAutoSkipError:"这首歌无法播放，已自动跳到下一首。",
+        toastPlaybackAllFailed:"连续多首歌曲都无法播放，已暂停播放，请检查网络后重试。",
+        toastAutoplayBlocked:"浏览器阻止了自动播放，请点击播放按钮继续。",
         toastLyricStyleSwitched:"已切换歌词炫酷效果。",
         toastDownloadNotReady:"当前歌曲还未加载完成，稍后再试。",
         toastPlaylistCreated:"歌单创建成功。",
@@ -1683,6 +1707,8 @@
         playerStatusLoading:"Loading audio…",
         playerStatusPlaying:"Playing",
         playerStatusPaused:"Paused",
+        playerStatusTimeoutSkip:"Load failed or timed out, auto skipping…",
+        playerAutoSkipHint:"Auto-skip after 10s",
         lyricsEmpty:"No lyrics yet. Try a song with LRC lyrics.",
         playlistTitle:"Playlists",
         tabResults:"Default",
@@ -1705,6 +1731,10 @@
         toastNeedKeyword:"Please enter a search keyword first.",
         toastSearchError:"An error occurred while searching.",
         toastPlayError:"Playback failed. Please try again.",
+        toastAutoSkipTimeout:"This track did not respond for 10s, auto skipped to the next one.",
+        toastAutoSkipError:"This track cannot be played, auto skipped to the next one.",
+        toastPlaybackAllFailed:"Several tracks failed to play. Playback paused, please check your network.",
+        toastAutoplayBlocked:"Autoplay was blocked by the browser. Please click the play button.",
         toastLyricStyleSwitched:"Lyrics FX toggled.",
         toastDownloadNotReady:"Song not fully loaded yet. Try again later.",
         toastPlaylistCreated:"Playlist created.",
@@ -1750,6 +1780,9 @@
       playContext:{type:'results',index:-1,playlistId:null},
       playMode:'list',
       isPlaying:false,
+      // playIntent：是否“希望这首歌在播放”（含加载中）。只有用户主动暂停/停止才会变 false，
+      // 音频元素内部因为报错而触发 pause 时不会影响它，保证超时自动切歌依然生效。
+      playIntent:false,
       lyricLines:[],
       currentLyricIndex:-1,
       searchInProgress:false,
@@ -2695,8 +2728,114 @@
       dom.favBtn.classList.toggle('btn-fav-active',active);
     }
 
+    // ===================== 播放卡住看门狗（超时自动切歌） =====================
+    // 规则：从开始加载一首歌起，如果 PLAY_STUCK_TIMEOUT_MS（默认 10 秒）内
+    //       audio.currentTime 完全没有前进，就认为这首歌卡住 / 无法播放，
+    //       自动跳到当前播放列表的下一首（单曲循环模式下也会往下切）。
+    const PLAY_STUCK_TIMEOUT_MS = 10000; // 10 秒无任何播放进展 → 自动下一首
+    const WATCHDOG_TICK_MS = 1000;       // 每秒检查一次
+    const PROGRESS_EPSILON = 0.2;        // currentTime 前进多少才算“有进展”
+
+    const watchdog = {
+      lastTime:-1,      // 上一次记录的播放进度
+      lastChangeAt:0,   // 进度最后一次变化的时间
+      failCount:0,      // 连续失败次数（正常播出后清零）
+      handling:false,   // 防止同一时刻重复触发切歌
+      timer:null
+    };
+
+    let playToken=0;    // 播放序号：用来丢弃已经过期的异步播放流程
+
+    function resetAutoSkipChain(){
+      watchdog.failCount=0;
+    }
+
+    // 开始一次新的加载/播放：进度基线清零，10 秒计时从此刻开始
+    function armPlayWatchdog(){
+      watchdog.lastTime=-1;
+      watchdog.lastChangeAt=Date.now();
+      watchdog.handling=false;
+    }
+
+    function startPlayWatchdog(){
+      if(watchdog.timer)return;
+      watchdog.timer=setInterval(watchdogTick, WATCHDOG_TICK_MS);
+    }
+
+    // 是否“希望播放”：加载中或播放中为 true；用户主动暂停/停止或播放被拦截时为 false
+    function isPlaybackIntended(){
+      return !!state.playIntent;
+    }
+
+    // 记录播放进展；返回 true 表示相比上次确实前进了
+    function markPlaybackProgress(){
+      const cur=dom.audio ? (dom.audio.currentTime||0) : 0;
+      if(watchdog.lastTime<0 || Math.abs(cur-watchdog.lastTime)>PROGRESS_EPSILON){
+        watchdog.lastTime=cur;
+        watchdog.lastChangeAt=Date.now();
+        // 正常播出一段时间后清空连续失败计数，避免误触发
+        if(cur>=5)resetAutoSkipChain();
+        return true;
+      }
+      return false;
+    }
+
+    function watchdogTick(){
+      if(!dom.audio)return;
+      if(!isPlaybackIntended()){
+        // 用户暂停 / 已停止：重置基线，不做超时判断
+        watchdog.lastTime=-1;
+        watchdog.lastChangeAt=Date.now();
+        return;
+      }
+      if(markPlaybackProgress())return;
+      if(Date.now()-watchdog.lastChangeAt < PLAY_STUCK_TIMEOUT_MS)return;
+      // 10 秒毫无进展 → 视作卡住，自动切歌
+      handlePlaybackStuck('timeout');
+    }
+
+    function handlePlaybackStuck(reason){
+      if(watchdog.handling)return;
+      const list=getActiveList();
+      if(!list.length){
+        state.playIntent=false;
+        state.isPlaying=false;
+        return;
+      }
+      watchdog.handling=true;
+      watchdog.failCount+=1;
+
+      if(watchdog.failCount>=list.length){
+        // 整个列表都放不出来：停下来，避免无限切歌
+        watchdog.failCount=0;
+        state.playIntent=false;
+        state.isPlaying=false;
+        try{dom.audio.pause();}catch(e){}
+        dom.playBtn.classList.add('paused');
+        dom.playerStatus.textContent=t('playerStatusIdle');
+        showToast(t('toastPlaybackAllFailed'));
+        return;
+      }
+
+      dom.playerStatus.textContent=t('playerStatusTimeoutSkip');
+      showToast(t(reason==='error'?'toastAutoSkipError':'toastAutoSkipTimeout'));
+      skipToNextTrack();
+    }
+
+    // 卡住时切歌：忽略单曲循环，直接顺序取下一首
+    function skipToNextTrack(){
+      const list=getActiveList();
+      if(!list.length){state.playIntent=false;state.isPlaying=false;return;}
+      let idx=state.playContext.index;
+      if(typeof idx!=='number' || idx<0 || idx>=list.length)idx=0;
+      idx=(idx+1)%list.length;
+      state.playContext={type:state.playContext.type,index:idx,playlistId:state.playContext.playlistId};
+      playTrack(list[idx],state.playContext);
+    }
+
     async function playTrack(track,context){
       if(!track)return;
+      const token=++playToken;   // 本次播放的序号，用于丢弃过期的异步流程
       state.currentTrack=track;
       state.playContext=context||state.playContext;
 
@@ -2743,21 +2882,45 @@
       renderLyrics();
       updateMainFavButton();
 
+      // 计时开始：10 秒内音频没有任何进展就自动切歌
+      armPlayWatchdog();
+      state.playIntent=true;
+      state.isPlaying=true;
+      dom.playBtn.classList.remove('paused');
+
       try{
         await ensureTrackDetails(track);
+        if(token!==playToken)return;   // 已经切到别的歌了，放弃这次播放
         applyUI();
         state.lyricLines = track.lrc ? parseLRC(track.lrc) : [];
         renderLyrics();
-        if(!track.audioUrl){showToast(t('toastPlayError'));dom.playerStatus.textContent=t('playerStatusIdle');return;}
+        if(!track.audioUrl){
+          showToast(t('toastPlayError'));
+          dom.playerStatus.textContent=t('playerStatusTimeoutSkip');
+          return;                      // 交给看门狗：10 秒后自动切歌
+        }
         dom.audio.src=track.audioUrl;
         await dom.audio.play();
+        if(token!==playToken)return;
         state.isPlaying=true;
         dom.playBtn.classList.remove('paused');
         dom.playerStatus.textContent=t('playerStatusPlaying');
       }catch(e){
+        if(token!==playToken)return;
         console.error(e);
+        if(e && e.name==='NotAllowedError'){
+          // 浏览器自动播放策略拦截：不自动切歌，等用户手动点击播放
+          state.playIntent=false;
+          state.isPlaying=false;
+          dom.playBtn.classList.add('paused');
+          dom.playerStatus.textContent=t('playerStatusPaused');
+          showToast(t('toastAutoplayBlocked'));
+          return;
+        }
         showToast(t('toastPlayError'));
-        dom.playerStatus.textContent=t('playerStatusIdle');
+        // 保持“希望播放”状态，交给看门狗在 10 秒后自动切歌
+        state.playIntent=true;
+        dom.playerStatus.textContent=t('playerStatusTimeoutSkip');
       }
 
       renderMiniSearchList();
@@ -2782,6 +2945,8 @@
     }
 
     function playFromList(type,index,plId){
+      // 用户主动选歌：重置“连续播放失败”计数
+      resetAutoSkipChain();
       let list;
       if(type==='results') list=getInterleavedSearchList();
       else if(type==='favorites') list=state.favorites;
@@ -2806,6 +2971,7 @@
 
       if(state.playMode==='single'){
         dom.audio.currentTime=0;
+        armPlayWatchdog();   // 重新计时：单曲重播如果也卡住，照样自动切歌
         dom.audio.play().catch(()=>{});
         return;
       }
@@ -2825,8 +2991,16 @@
 
     function togglePlayPause(){
       if(!dom.audio.src)return;
-      if(state.isPlaying)dom.audio.pause();
-      else dom.audio.play().catch(e=>console.error(e));
+      if(state.playIntent){
+        // 用户主动暂停：关闭自动切歌，避免暂停时被误切歌
+        state.playIntent=false;
+        dom.audio.pause();
+      }else{
+        // 恢复播放：重新开始 10 秒计时
+        state.playIntent=true;
+        armPlayWatchdog();
+        dom.audio.play().catch(e=>console.error(e));
+      }
     }
 
     function toggleFavoriteCurrent(){
@@ -3331,6 +3505,8 @@
 
       dom.audio.addEventListener('timeupdate',()=>{
         const cur=dom.audio.currentTime||0, dur=dom.audio.duration||0;
+        // 有播放进展就刷新看门狗计时，保证 10 秒超时判断精准
+        markPlaybackProgress();
         dom.currentTime.textContent=formatTime(cur);
         dom.totalTime.textContent=formatTime(dur||0);
         if(dur>0){
@@ -3357,6 +3533,15 @@
       dom.audio.addEventListener('ended',()=>{
         audioLevel = 0;
         playNext('next');
+      });
+      // 音频真正加载/解码失败时，立刻按“无法播放”处理并跳到下一首
+      dom.audio.addEventListener('error',()=>{
+        if(!state.playIntent)return;                   // 用户已暂停/停止时不做处理
+        if(!dom.audio.error)return;                    // 没有真实错误（可能是上一首残留事件）
+        const cur=dom.audio.currentSrc||dom.audio.src||'';
+        const tr=state.currentTrack;
+        if(!tr || !tr.audioUrl || !cur || cur!==tr.audioUrl)return; // 报错的不是当前这首，忽略
+        handlePlaybackStuck('error');
       });
 
       dom.progressWrapper.addEventListener('click',e=>{
@@ -3464,6 +3649,8 @@
       renderPlaylistList();
       setPlaymodeUI();
       dom.audio.volume=parseFloat(dom.volumeSlider.value);
+      // 启动看门狗：任意歌曲超过 10 秒没有播放进展时自动切歌
+      startPlayWatchdog();
     }
 
     document.addEventListener('DOMContentLoaded',init);
